@@ -2,80 +2,254 @@
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import accuracy_score, classification_report
+import shap
+import argparse
+import logging
+from joblib import Parallel, delayed
 
-# Data collection and preprocessing (replace with actual data source)
-data = pd.read_csv('cybersecurity_data.csv')
-X = data.drop('label', axis=1)
-y = data['label']
-
-# Train a machine learning model
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-model = RandomForestClassifier(n_estimators=100, random_state=42)
-model.fit(X_train, y_train)
-
-# Model evaluation
-y_pred = model.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-report = classification_report(y_test, y_pred)
-
-# Risk Scoring Algorithm
-def calculate_risk_score(data_row):
-    # Define a basic risk scoring algorithm
-    impact = data_row['impact']  # Example: High, Medium, Low
-    likelihood = data_row['likelihood']  # Example: High, Medium, Low
-
-    # Assign numerical values to impact and likelihood
-    impact_values = {'High': 3, 'Medium': 2, 'Low': 1}
-    likelihood_values = {'High': 3, 'Medium': 2, 'Low': 1}
-
-    # Calculate risk score (e.g., impact * likelihood)
-    risk_score = impact_values.get(impact, 1) * likelihood_values.get(likelihood, 1)
-    return risk_score
-
-# Mitigation Recommendations Logic
-def generate_mitigation_recommendations(data_row):
-    # Example: Based on risk score and other factors, provide mitigation recommendations
-    risk_score = data_row['risk_score']
-
-    if risk_score >= 6:
-        return "Implement immediate security patches and increase monitoring."
-    elif risk_score >= 3:
-        return "Schedule security patches and improve access controls."
-    else:
-        return "Regularly monitor and assess for potential risks."
-
-# User Access Control Rules
-def user_access_control(username, action):
-    # Define access control rules
-    user_roles = {
+# Configuration - Parameters that can be adjusted easily
+CONFIG = {
+    'DATA_FILE_PATH': 'cybersecurity_data.csv',
+    'MODEL_PARAMETERS': {'n_estimators': 100, 'random_state': 42},
+    'RISK_SCORE_THRESHOLDS': {'high': 6, 'medium': 3},
+    'IMPACT_VALUES': {'High': 3, 'Medium': 2, 'Low': 1},
+    'LIKELIHOOD_VALUES': {'High': 3, 'Medium': 2, 'Low': 1},
+    'USER_ROLES': {
         'admin': ['view', 'edit', 'delete'],
         'analyst': ['view', 'edit'],
         'guest': ['view'],
     }
+}
 
-    if username in user_roles:
-        if action in user_roles[username]:
-            return True
-    return False
+# Logger configuration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Reporting Function
-def generate_report(data):
-    # Create a detailed risk report
+def load_data(file_path):
+    """
+    Load data from a CSV file.
+
+    Parameters:
+    - file_path (str): Path to the CSV file.
+
+    Returns:
+    - pd.DataFrame: Loaded DataFrame or None if an error occurs.
+    """
+    try:
+        data = pd.read_csv(file_path)
+        return data
+    except FileNotFoundError:
+        logger.error(f"Error: File '{file_path}' not found.")
+        return None
+    except Exception as e:
+        logger.error(f"An error occurred while loading the data: {e}")
+        return None
+
+def feature_engineering(data):
+    """
+    Perform feature engineering on the dataset.
+
+    Parameters:
+    - data (pd.DataFrame): Input DataFrame.
+
+    Returns:
+    - pd.DataFrame: DataFrame with engineered features.
+    """
+    # Add feature engineering logic here
+    # Example: data['new_feature'] = data['feature1'] + data['feature2']
+    return data
+
+def train_model(X_train, y_train, model_params):
+    """
+    Train a machine learning model.
+
+    Parameters:
+    - X_train (pd.DataFrame): Training features.
+    - y_train (pd.Series): Training labels.
+    - model_params (dict): Parameters for the RandomForestClassifier.
+
+    Returns:
+    - RandomForestClassifier: Trained machine learning model.
+    """
+    model = RandomForestClassifier(**model_params)
+    model.fit(X_train, y_train)
+    return model
+
+def evaluate_model(model, X_test, y_test):
+    """
+    Evaluate a machine learning model.
+
+    Parameters:
+    - model (RandomForestClassifier): Trained machine learning model.
+    - X_test (pd.DataFrame): Test features.
+    - y_test (pd.Series): Test labels.
+
+    Returns:
+    - tuple: Accuracy score and classification report.
+    """
+    y_pred = model.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    report = classification_report(y_test, y_pred)
+    return accuracy, report
+
+def calculate_risk_score(data_row, impact_values, likelihood_values):
+    """
+    Calculate a risk score based on impact and likelihood values.
+
+    Parameters:
+    - data_row (pd.Series): Row of the DataFrame representing a data point.
+    - impact_values (dict): Mapping of impact levels to numerical values.
+    - likelihood_values (dict): Mapping of likelihood levels to numerical values.
+
+    Returns:
+    - int: Calculated risk score.
+    """
+    impact = data_row['impact']
+    likelihood = data_row['likelihood']
+    risk_score = impact_values.get(impact, 1) * likelihood_values.get(likelihood, 1)
+    return risk_score
+
+def generate_mitigation_recommendations(data_row, threshold_high, threshold_medium):
+    """
+    Generate mitigation recommendations based on risk score.
+
+    Parameters:
+    - data_row (pd.Series): Row of the DataFrame representing a data point.
+    - threshold_high (int): Threshold for a high-risk score.
+    - threshold_medium (int): Threshold for a medium-risk score.
+
+    Returns:
+    - str: Mitigation recommendations.
+    """
+    risk_score = data_row['risk_score']
+
+    if risk_score >= threshold_high:
+        return "Implement immediate security patches and increase monitoring."
+    elif risk_score >= threshold_medium:
+        return "Schedule security patches and improve access controls."
+    else:
+        return "Regularly monitor and assess for potential risks."
+
+def user_access_control(username, action, user_roles):
+    """
+    Check if a user has access to perform a specific action.
+
+    Parameters:
+    - username (str): User's role.
+    - action (str): Action to be performed.
+    - user_roles (dict): Mapping of user roles to allowed actions.
+
+    Returns:
+    - bool: True if the user has access, False otherwise.
+    """
+    return username in user_roles and action in user_roles[username]
+
+def generate_report(data, risk_score_thresholds):
+    """
+    Generate a detailed risk report.
+
+    Parameters:
+    - data (pd.DataFrame): DataFrame containing risk assessment data.
+    - risk_score_thresholds (tuple): Thresholds for high and medium risk scores.
+
+    Returns:
+    - str: Detailed risk report.
+    """
     report = ""
     for index, row in data.iterrows():
         report += f"Asset: {row['asset']}\n"
         report += f"Vulnerability: {row['vulnerability']}\n"
         report += f"Threat: {row['threat']}\n"
         report += f"Risk Score: {row['risk_score']}\n"
-        report += f"Mitigation Recommendations: {generate_mitigation_recommendations(row)}\n\n"
-
+        report += f"Mitigation Recommendations: {generate_mitigation_recommendations(row, *risk_score_thresholds)}\n\n"
     return report
 
-# Calculate risk scores for each data row
-data['risk_score'] = data.apply(calculate_risk_score, axis=1)
+def feature_importance(model, X_train):
+    """
+    Calculate and display feature importance.
 
-# Generate a risk report
-risk_report = generate_report(data)
-print(risk_report)
+    Parameters:
+    - model (RandomForestClassifier): Trained machine learning model.
+    - X_train (pd.DataFrame): Training features.
+    """
+    shap.initjs()
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_train)
+    shap.summary_plot(shap_values, X_train, plot_type="bar")
+
+def cross_validate_model(X, y, model, param_grid, cv=5, n_jobs=-1):
+    """
+    Perform cross-validation for hyperparameter tuning.
+
+    Parameters:
+    - X (pd.DataFrame): Features.
+    - y (pd.Series): Labels.
+    - model (RandomForestClassifier): Machine learning model.
+    - param_grid (dict): Hyperparameter grid for GridSearchCV.
+    - cv (int): Number of cross-validation folds.
+    - n_jobs (int): Number of parallel jobs.
+
+    Returns:
+    - RandomForestClassifier: Best tuned model.
+    """
+    grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=cv, n_jobs=n_jobs)
+    grid_search.fit(X, y)
+    best_model = grid_search.best_estimator_
+    return best_model
+
+def main(data_file_path, model_params, risk_score_thresholds, impact_values, likelihood_values, user_roles):
+    """
+    Main function to execute the entire process.
+
+    Parameters:
+    - data_file_path (str): Path to the cybersecurity data file.
+    - model_params (dict): Parameters for the RandomForestClassifier.
+    - risk_score_thresholds (tuple): Thresholds for high and medium risk scores.
+    - impact_values (dict): Mapping of impact levels to numerical values.
+    - likelihood_values (dict): Mapping of likelihood levels to numerical values.
+    - user_roles (dict): Mapping of user roles to allowed actions.
+    """
+    logger.info("Loading data...")
+    data = load_data(data_file_path)
+
+    if data is None:
+        return
+
+    logger.info("Performing feature engineering...")
+    data = feature_engineering(data)
+
+    X = data.drop('label', axis=1)
+    y = data['label']
+
+    logger.info("Splitting data into train and test sets...")
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    logger.info("Training the machine learning model...")
+    best_model = cross_validate_model(X_train, y_train, RandomForestClassifier(), param_grid={}, cv=5, n_jobs=-1)
+
+    logger.info("Evaluating the model...")
+    accuracy, report = evaluate_model(best_model, X_test, y_test)
+    logger.info(f"Model Accuracy: {accuracy}")
+    logger.info("Classification Report:")
+    logger.info(report)
+
+    logger.info("Calculating feature importance...")
+    feature_importance(best_model, X_train)
+
+    logger.info("Calculating risk scores...")
+    data['risk_score'] = data.apply(calculate_risk_score, axis=1, impact_values=impact_values, likelihood_values=likelihood_values)
+
+    logger.info("Generating risk report...")
+    risk_report = generate_report(data, risk_score_thresholds)
+    logger.info("Risk Report:")
+    logger.info(risk_report)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Cybersecurity Risk Assessment Script")
+    parser.add_argument("--data", type=str, default=CONFIG['DATA_FILE_PATH'], help="Path to the cybersecurity data file")
+    args = parser.parse_args()
+
+    main(args.data, CONFIG['MODEL_PARAMETERS'], (CONFIG['RISK_SCORE_THRESHOLDS']['high'], CONFIG['RISK_SCORE_THRESHOLDS']['medium']),
+         CONFIG['IMPACT_VALUES'], CONFIG['LIKELIHOOD_VALUES'], CONFIG['USER_ROLES'])
